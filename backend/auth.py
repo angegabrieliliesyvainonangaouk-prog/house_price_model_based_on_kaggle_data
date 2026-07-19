@@ -1,32 +1,18 @@
 import os
 import secrets
 import hashlib
-import secrets as _secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from jose import jwt, JWTError
 from passlib.context import CryptContext
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is not set. Define it in Render Dashboard > Environment.")
 JWT_SECRET = os.getenv("JWT_SECRET_KEY", "CHANGE_ME")
 JWT_ALG = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_EXPIRE = int(os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 REFRESH_EXPIRE_DAYS = int(os.getenv("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=10, max_overflow=20)
-async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-async def get_db():
-    async with async_session() as session:
-        yield session
 
 
 def hash_password(password: str) -> str:
@@ -38,7 +24,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def generate_default_password() -> str:
-    return _secrets.token_urlsafe(12)
+    return secrets.token_urlsafe(12)
 
 
 def hash_token(token: str) -> str:
@@ -75,6 +61,19 @@ def decode_token(token: str) -> Optional[dict]:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     except JWTError:
         return None
+
+
+def create_verification_token(user_id: str, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(hours=24)
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "type": "verify",
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+        "jti": secrets.token_hex(16),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 
 def set_auth_cookies(response, access_token: str, refresh_token: str, secure: bool = False, domain: str = ""):

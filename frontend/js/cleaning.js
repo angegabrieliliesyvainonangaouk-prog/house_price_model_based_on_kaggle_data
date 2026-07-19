@@ -184,19 +184,7 @@ async function startCleaning() {
   downloadSection.style.display = 'none';
 
   try {
-    const formData = new FormData();
-    formData.append('file', rawCSVFile);
-    const res = await fetch(API + '/clean', {
-      method: 'POST',
-      headers: {'X-Token': getToken()},
-      body: formData
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({detail: t('error_unknown')}));
-      throw new Error(extractErrorDetail(err));
-    }
-    const respBlob = await res.blob();
-    cleanedCSVText = await respBlob.text();
+    cleanedCSVText = window.Cleaner.cleanCSV(rawCSVText);
     const blob = new Blob([cleanedCSVText], {type: 'text/csv'});
     const blobUrl = URL.createObjectURL(blob);
     cleanedBlobUrl = blobUrl;

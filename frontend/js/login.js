@@ -101,7 +101,7 @@ async function handleRegister(e) {
     let data;
     try { data = await res.json(); } catch { data = { detail: 'Erreur serveur (HTTP ' + res.status + ')' }; }
     if (!res.ok) throw new Error(data.detail || 'Erreur lors de l\'inscription');
-    showMessage('Compte cree ! Un e-mail de confirmation a ete envoye. Connectez-vous avec le mot de passe recu.', 'success');
+    showMessage('Compte cree ! Un e-mail de confirmation a ete envoye. Verifiez votre boite de reception puis connectez-vous.', 'success');
     setTimeout(() => {
       document.querySelectorAll('.auth-tab')[0].click();
     }, 3000);

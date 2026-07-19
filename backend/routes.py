@@ -10,38 +10,36 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from contextlib import asynccontextmanager
 from collections import defaultdict
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Response, Depends
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.staticfiles import StaticFiles
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request, Response, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPBearer
-from pydantic import BaseModel, EmailStr
-from dotenv import load_dotenv
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
-from prediction import (
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from database import get_db
+from auth import (
+    hash_password, verify_password, generate_default_password,
+    create_access_token, create_refresh_token, decode_token, hash_token,
+    create_verification_token,
+    set_auth_cookies, clear_auth_cookies, get_client_ip, verify_csrf
+)
+from email_service import send_verification_email, send_password_change_confirmation
+from cerveau.prediction import (
     predict_normal, predict_csv,
     ModelLoader, FEATURE_NAMES, COLUMNS_GUIDE, COLUMNS_GUIDE_MAP,
     FEATURE_COUNT, ONE_HOT_GROUPS
 )
 
-from auth import (
-    get_db, hash_password, verify_password, generate_default_password,
-    create_access_token, create_refresh_token, decode_token, hash_token,
-    set_auth_cookies, clear_auth_cookies, get_client_ip, verify_csrf
-)
-from email_service import send_welcome_email, send_password_change_confirmation
+logger = logging.getLogger("api")
 
-load_dotenv()
+router = APIRouter()
 
+# --- Config ---
 APP_NAME = os.getenv("APP_NAME", "ML Predictor Pro")
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 MAX_CSV_ROWS = int(os.getenv("MAX_CSV_ROWS", "1461"))
@@ -49,31 +47,23 @@ RATE_LIMIT_PER_IP = int(os.getenv("RATE_LIMIT_PER_IP", "60"))
 RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "3600"))
 DAILY_TOKEN_LIMIT = int(os.getenv("DAILY_TOKEN_LIMIT", "20"))
 TOKEN_WINDOW = int(os.getenv("TOKEN_WINDOW", "86400"))
-
 PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
 PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
 PAYPAL_BASE_URL = os.getenv("PAYPAL_BASE_URL", "https://api-m.sandbox.paypal.com")
-PAYPAL_PRODUCT_ID = os.getenv("PAYPAL_PRODUCT_ID", "")
-PAYPAL_PRICE_ID = os.getenv("PAYPAL_PRICE_ID", "")
 CLEANING_PRICE = os.getenv("CLEANING_PRICE", "1.00")
-
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_DOMAIN = os.getenv("COOKIE_DOMAIN", "")
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("api")
-
+# --- Stores ---
 _rate_store = defaultdict(list)
 _token_store = defaultdict(list)
-_fingerprint_rate_store = defaultdict(list)
-
 _paypal_token_cache = {"token": "", "expires": 0}
 _paypal_orders = set()
-
 _pred_executor = ThreadPoolExecutor(max_workers=4)
 _ml_metadata_cache = None
 
 
+# --- Rate limiting ---
 def _rate_limit_combined(ip: str, fingerprint: str, limit: int, window: int) -> bool:
     now = time.time()
     combined_key = f"{ip}:{fingerprint}" if fingerprint else ip
@@ -99,11 +89,7 @@ def _rate_limit_token(token: str, limit: int, window: int) -> bool:
     return True
 
 
-def _generate_token(ip: str) -> str:
-    raw = f"{ip}:{int(time.time() / TOKEN_WINDOW)}:{os.urandom(4).hex()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
+# --- Metadata cache ---
 async def _get_metadata():
     global _ml_metadata_cache
     if _ml_metadata_cache:
@@ -118,6 +104,7 @@ async def _get_metadata():
     return _ml_metadata_cache
 
 
+# --- Auth dependencies ---
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[dict]:
     access_token = request.cookies.get("access_token", "")
     if not access_token:
@@ -128,7 +115,7 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     user_id = payload.get("sub")
     if not user_id:
         return None
-    result = await db.execute(text("SELECT id, email, is_active, default_password_used FROM users WHERE id = :uid"), {"uid": user_id})
+    result = await db.execute(text("SELECT id, email, is_active, is_verified, default_password_used FROM users WHERE id = :uid"), {"uid": user_id})
     row = result.mappings().first()
     if not row or not row["is_active"]:
         return None
@@ -145,203 +132,45 @@ async def require_auth(request: Request, db: AsyncSession = Depends(get_db)) -> 
     return user
 
 
-TRAIN_COLUMNS = [
-    "Id", "MSSubClass", "MSZoning", "LotFrontage", "LotArea", "Street", "Alley",
-    "LotShape", "LandContour", "Utilities", "LotConfig", "LandSlope", "Neighborhood",
-    "Condition1", "Condition2", "BldgType", "HouseStyle", "OverallQual", "OverallCond",
-    "YearBuilt", "YearRemodAdd", "RoofStyle", "RoofMatl", "Exterior1st", "Exterior2nd",
-    "MasVnrType", "MasVnrArea", "ExterQual", "ExterCond", "Foundation", "BsmtQual",
-    "BsmtCond", "BsmtExposure", "BsmtFinType1", "BsmtFinSF1", "BsmtFinType2",
-    "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF", "Heating", "HeatingQC", "CentralAir",
-    "Electrical", "1stFlrSF", "2ndFlrSF", "LowQualFinSF", "GrLivArea", "BsmtFullBath",
-    "BsmtHalfBath", "FullBath", "HalfBath", "BedroomAbvGr", "KitchenAbvGr",
-    "KitchenQual", "TotRmsAbvGrd", "Functional", "Fireplaces", "FireplaceQu",
-    "GarageType", "GarageYrBlt", "GarageFinish", "GarageCars", "GarageArea",
-    "GarageQual", "GarageCond", "PavedDrive", "WoodDeckSF", "OpenPorchSF",
-    "EnclosedPorch", "3SsnPorch", "ScreenPorch", "PoolArea", "PoolQC", "Fence",
-    "MiscFeature", "MiscVal", "MoSold", "YrSold", "SaleType", "SaleCondition",
-]
+# =============================================================================
+# ROUTES PAGES (HTML)
+# =============================================================================
+
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
-CREATE_TABLES_SQL = """
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
-CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL,
-    is_active BOOLEAN DEFAULT TRUE,
-    is_verified BOOLEAN DEFAULT FALSE,
-    default_password_used BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    last_login TIMESTAMPTZ,
-    login_attempts INTEGER DEFAULT 0,
-    locked_until TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash VARCHAR(255) NOT NULL,
-    fingerprint_hash VARCHAR(255) NOT NULL,
-    ip_address INET,
-    user_agent TEXT,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    revoked BOOLEAN DEFAULT FALSE
-);
-
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
-CREATE INDEX IF NOT EXISTS idx_refresh_tokens_hash ON refresh_tokens(token_hash);
-
-CREATE TABLE IF NOT EXISTS login_audit (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
-    email_attempted VARCHAR(255) NOT NULL,
-    ip_address INET NOT NULL,
-    fingerprint_hash VARCHAR(255),
-    success BOOLEAN DEFAULT FALSE,
-    failure_reason TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_login_audit_ip ON login_audit(ip_address);
-CREATE INDEX IF NOT EXISTS idx_login_audit_time ON login_audit(created_at);
-"""
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info(f"API: starting {APP_NAME} v{APP_VERSION}")
-
-    try:
-        ModelLoader.load()
-        logger.info("API: ML models loaded")
-    except Exception as e:
-        logger.warning(f"API: could not load ML models: {e}")
-
-    try:
-        from auth import async_session
-        async with async_session() as session:
-            for statement in CREATE_TABLES_SQL.split(";"):
-                stmt = statement.strip()
-                if stmt:
-                    await session.execute(text(stmt))
-            await session.commit()
-        logger.info("API: database tables ensured")
-    except Exception as e:
-        logger.warning(f"API: could not create tables: {e}")
-
-    logger.info("API: ready")
-    yield
-    _pred_executor.shutdown(wait=False)
-    logger.info("API: shutdown")
-
-
-app = FastAPI(title=APP_NAME, version=APP_VERSION, lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-    max_age=3600,
-)
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={
-            "detail": [
-                {"field": ".".join(str(x) for x in e["loc"] if x != "body"), "message": e["msg"], "type": e["type"]}
-                for e in exc.errors()
-            ]
-        },
-    )
-
-
-@app.exception_handler(StarletteHTTPException)
-async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "Erreur interne du serveur"})
-
-
-@app.middleware("http")
-async def security_middleware(request: Request, call_next):
-    response = await call_next(request)
-
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:; "
-        "connect-src 'self'; "
-        "font-src 'self'; "
-        "frame-ancestors 'none'"
-    )
-
-    return response
-
-
-@app.middleware("http")
-async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path.startswith("/api/") and not request.url.path.startswith("/api/v1/auth"):
-        ip = get_client_ip(request)
-        fingerprint = request.headers.get("X-Fingerprint", "")
-        if not _rate_limit_combined(ip, fingerprint, RATE_LIMIT_PER_IP, RATE_LIMIT_WINDOW):
-            return JSONResponse(status_code=429, content={"error": "Too many requests", "detail": "Limite de taux atteinte.", "retry_after": RATE_LIMIT_WINDOW})
-    return await call_next(request)
-
-
-FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
-app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
-
-@app.get("/login", response_class=HTMLResponse)
+@router.get("/login", response_class=HTMLResponse)
 async def login_page():
-    html_path = FRONTEND_DIR / "login.html"
+    html_path = FRONTEND_DIR / "html" / "login.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
     return HTMLResponse("<h1>Login page not found</h1>")
 
 
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 async def index(request: Request, db: AsyncSession = Depends(get_db)):
     user = await get_current_user(request, db)
     if not user:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/login", status_code=302)
-    html_path = FRONTEND_DIR / "index.html"
+    html_path = FRONTEND_DIR / "html" / "index.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
     return HTMLResponse("<h1>ML Predictor Pro</h1><p>Frontend not found.</p>")
 
 
-@app.get("/api/v1/me")
+# =============================================================================
+# ROUTES AUTH
+# =============================================================================
+
+@router.get("/api/v1/me")
 async def get_me(user: dict = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=401, detail="Non authentifie")
     return {"id": user["id"], "email": user["email"], "must_change_password": user.get("default_password_used", False)}
 
 
-@app.post("/api/v1/auth/register")
+@router.post("/api/v1/auth/register")
 async def auth_register(request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     email = (body.get("email") or "").strip().lower()
@@ -358,17 +187,17 @@ async def auth_register(request: Request, db: AsyncSession = Depends(get_db)):
     if existing.mappings().first():
         raise HTTPException(status_code=409, detail="Un compte existe deja avec cet e-mail")
 
-    default_pwd = generate_default_password()
-    default_pwd_hash = hash_password(default_pwd)
     user_pwd_hash = hash_password(password)
-
-    await db.execute(
-        text("INSERT INTO users (email, password_hash, is_verified, default_password_used) VALUES (:email, :pwd, :verified, :default_used)"),
+    result = await db.execute(
+        text("INSERT INTO users (email, password_hash, is_verified, default_password_used) VALUES (:email, :pwd, :verified, :default_used) RETURNING id"),
         {"email": email, "pwd": user_pwd_hash, "verified": False, "default_used": True}
     )
+    user_id = result.scalar()
     await db.commit()
 
-    await send_welcome_email(email, default_pwd)
+    verification_token = create_verification_token(str(user_id), email)
+    base_url = str(request.base_url).rstrip("/")
+    await send_verification_email(email, verification_token, base_url)
 
     ip = get_client_ip(request)
     fingerprint = request.headers.get("X-Fingerprint", "unknown")
@@ -378,10 +207,40 @@ async def auth_register(request: Request, db: AsyncSession = Depends(get_db)):
     )
     await db.commit()
 
-    return {"message": "Compte cree. Un e-mail avec le mot de passe par defaut a ete envoye."}
+    return {"message": "Compte cree. Un e-mail de verification a ete envoye. Veuillez confirmer votre adresse avant de vous connecter."}
 
 
-@app.post("/api/v1/auth/login")
+@router.get("/api/v1/auth/verify-email")
+async def verify_email(token: str = "", db: AsyncSession = Depends(get_db)):
+    if not token:
+        return HTMLResponse("<h2>Token manquant</h2><p>Aucun token de verification fourni.</p>", status_code=400)
+
+    payload = decode_token(token)
+    if not payload or payload.get("type") != "verify":
+        return HTMLResponse("<h2>Lien invalide</h2><p>Ce lien de verification est invalide ou a expire.</p>", status_code=400)
+
+    user_id = payload.get("sub")
+    result = await db.execute(text("SELECT id, is_verified FROM users WHERE id = :uid"), {"uid": user_id})
+    row = result.mappings().first()
+    if not row:
+        return HTMLResponse("<h2>Compte non trouve</h2>", status_code=404)
+
+    if row["is_verified"]:
+        return HTMLResponse("<h2>Compte deja verifie</h2><p>Votre compte est deja actif. Vous pouvez vous connecter.</p><a href='/login'>Se connecter</a>")
+
+    await db.execute(text("UPDATE users SET is_verified = TRUE, updated_at = NOW() WHERE id = :uid"), {"uid": user_id})
+    await db.commit()
+
+    return HTMLResponse("""
+    <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+    <h2 style="color:#059669">E-mail verifie !</h2>
+    <p>Votre compte est maintenant actif.</p>
+    <a href="/login" style="display:inline-block;margin-top:20px;padding:12px 24px;background:#2563eb;color:white;text-decoration:none;border-radius:8px">Se connecter</a>
+    </body></html>
+    """)
+
+
+@router.post("/api/v1/auth/login")
 async def auth_login(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     email = (body.get("email") or "").strip().lower()
@@ -393,7 +252,7 @@ async def auth_login(request: Request, response: Response, db: AsyncSession = De
         raise HTTPException(status_code=400, detail="E-mail et mot de passe requis")
 
     result = await db.execute(
-        text("SELECT id, password_hash, is_active, default_password_used, login_attempts, locked_until FROM users WHERE email = :email"),
+        text("SELECT id, password_hash, is_active, is_verified, default_password_used, login_attempts, locked_until FROM users WHERE email = :email"),
         {"email": email}
     )
     row = result.mappings().first()
@@ -411,6 +270,9 @@ async def auth_login(request: Request, response: Response, db: AsyncSession = De
 
     if not row["is_active"]:
         raise HTTPException(status_code=403, detail="Compte desactive")
+
+    if not row["is_verified"]:
+        raise HTTPException(status_code=403, detail="E-mail non verifie. Verifiez votre boite de reception.")
 
     if not verify_password(password, row["password_hash"]):
         new_attempts = (row["login_attempts"] or 0) + 1
@@ -461,7 +323,7 @@ async def auth_login(request: Request, response: Response, db: AsyncSession = De
     }
 
 
-@app.post("/api/v1/auth/logout")
+@router.post("/api/v1/auth/logout")
 async def auth_logout(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     refresh_token = request.cookies.get("refresh_token", "")
     if refresh_token:
@@ -472,7 +334,7 @@ async def auth_logout(request: Request, response: Response, db: AsyncSession = D
     return {"message": "Deconnexion reussie"}
 
 
-@app.post("/api/v1/auth/refresh")
+@router.post("/api/v1/auth/refresh")
 async def auth_refresh(request: Request, response: Response, db: AsyncSession = Depends(get_db)):
     refresh_token = request.cookies.get("refresh_token", "")
     if not refresh_token:
@@ -522,7 +384,7 @@ async def auth_refresh(request: Request, response: Response, db: AsyncSession = 
     return {"message": "Token rafraichi"}
 
 
-@app.post("/api/v1/auth/change-password")
+@router.post("/api/v1/auth/change-password")
 async def auth_change_password(request: Request, db: AsyncSession = Depends(get_db)):
     body = await request.json()
     old_password = body.get("old_password", "")
@@ -562,11 +424,31 @@ async def auth_change_password(request: Request, db: AsyncSession = Depends(get_
     return {"message": "Mot de passe modifie avec succes"}
 
 
-@app.post("/api/v1/predict/normal")
+# =============================================================================
+# ROUTES PREDICTION
+# =============================================================================
+
+TRAIN_COLUMNS = [
+    "Id", "MSSubClass", "MSZoning", "LotFrontage", "LotArea", "Street", "Alley",
+    "LotShape", "LandContour", "Utilities", "LotConfig", "LandSlope", "Neighborhood",
+    "Condition1", "Condition2", "BldgType", "HouseStyle", "OverallQual", "OverallCond",
+    "YearBuilt", "YearRemodAdd", "RoofStyle", "RoofMatl", "Exterior1st", "Exterior2nd",
+    "MasVnrType", "MasVnrArea", "ExterQual", "ExterCond", "Foundation", "BsmtQual",
+    "BsmtCond", "BsmtExposure", "BsmtFinType1", "BsmtFinSF1", "BsmtFinType2",
+    "BsmtFinSF2", "BsmtUnfSF", "TotalBsmtSF", "Heating", "HeatingQC", "CentralAir",
+    "Electrical", "1stFlrSF", "2ndFlrSF", "LowQualFinSF", "GrLivArea", "BsmtFullBath",
+    "BsmtHalfBath", "FullBath", "HalfBath", "BedroomAbvGr", "KitchenAbvGr",
+    "KitchenQual", "TotRmsAbvGrd", "Functional", "Fireplaces", "FireplaceQu",
+    "GarageType", "GarageYrBlt", "GarageFinish", "GarageCars", "GarageArea",
+    "GarageQual", "GarageCond", "PavedDrive", "WoodDeckSF", "OpenPorchSF",
+    "EnclosedPorch", "3SsnPorch", "ScreenPorch", "PoolArea", "PoolQC", "Fence",
+    "MiscFeature", "MiscVal", "MoSold", "YrSold", "SaleType", "SaleCondition",
+]
+
+
+@router.post("/api/v1/predict/normal")
 async def predict_normal_endpoint(request: Request, user: dict = Depends(require_auth)):
     body = await request.json()
-    ip = get_client_ip(request)
-    fingerprint = request.headers.get("X-Fingerprint", "")
     token_key = f"user:{user['id']}"
     if not _rate_limit_token(token_key, DAILY_TOKEN_LIMIT, TOKEN_WINDOW):
         raise HTTPException(status_code=429, detail="Limite quotidienne de predictions atteinte.")
@@ -585,7 +467,7 @@ async def predict_normal_endpoint(request: Request, user: dict = Depends(require
         raise HTTPException(status_code=500, detail="Erreur de prediction")
 
 
-@app.post("/api/v1/predict/csv")
+@router.post("/api/v1/predict/csv")
 async def predict_csv_endpoint(request: Request, model: str = "xgboost", file: UploadFile = File(...), user: dict = Depends(require_auth)):
     if model not in ("catboost", "xgboost"):
         raise HTTPException(status_code=400, detail="Model must be 'catboost' or 'xgboost'")
@@ -621,12 +503,16 @@ async def predict_csv_endpoint(request: Request, model: str = "xgboost", file: U
         raise HTTPException(status_code=500, detail="Erreur lors du traitement CSV")
 
 
-@app.get("/api/v1/health")
+# =============================================================================
+# ROUTES INFO
+# =============================================================================
+
+@router.get("/api/v1/health")
 async def health():
     return {"status": "ok", "app": APP_NAME, "version": APP_VERSION, "models_loaded": ModelLoader._loaded}
 
 
-@app.get("/api/v1/models")
+@router.get("/api/v1/models")
 async def models():
     meta = await _get_metadata()
     return {
@@ -661,13 +547,13 @@ async def models():
     }
 
 
-@app.get("/api/v1/column-guide")
+@router.get("/api/v1/column-guide")
 async def column_guide():
     meta = await _get_metadata()
     return {"columns": meta["columns_guide"]}
 
 
-@app.get("/api/v1/column-guide/{name}")
+@router.get("/api/v1/column-guide/{name}")
 async def column_guide_item(name: str):
     meta = await _get_metadata()
     if name in meta["columns_guide_map"]:
@@ -675,13 +561,9 @@ async def column_guide_item(name: str):
     raise HTTPException(status_code=404, detail="Column not found")
 
 
-@app.get("/api/v1/template")
+@router.get("/api/v1/template")
 async def download_template():
-    try:
-        from prediction import FEATURE_NAMES
-        cols = FEATURE_NAMES
-    except ImportError:
-        cols = TRAIN_COLUMNS
+    cols = FEATURE_NAMES
     out = io.StringIO()
     writer = csv.DictWriter(out, fieldnames=cols, extrasaction="ignore")
     writer.writeheader()
@@ -695,91 +577,10 @@ async def download_template():
     )
 
 
-@app.post("/api/v1/clean")
-async def clean_csv_endpoint(request: Request, file: UploadFile = File(...), user: dict = Depends(require_auth)):
-    if not file.filename or not file.filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Seuls les fichiers CSV sont acceptes")
-    try:
-        content = await file.read()
-        text_data = content.decode("utf-8-sig")
-        reader = csv.DictReader(io.StringIO(text_data))
-        raw_rows = list(reader)
-        if len(raw_rows) > MAX_CSV_ROWS:
-            raise HTTPException(status_code=400, detail=f"CSV contient {len(raw_rows)} lignes, maximum {MAX_CSV_ROWS}")
-        if len(raw_rows) == 0:
-            raise HTTPException(status_code=400, detail="Fichier CSV vide")
-        from prediction_cleaner import clean_csv
-        cleaned_records = clean_csv(text_data)
-        if not cleaned_records:
-            raise HTTPException(status_code=400, detail="Aucune donnee apres nettoyage")
-        out = io.StringIO()
-        writer = csv.DictWriter(out, fieldnames=list(cleaned_records[0].keys()))
-        writer.writeheader()
-        for rec in cleaned_records:
-            writer.writerow(rec)
-        return Response(
-            content=out.getvalue().encode("utf-8"),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=cleaned.csv"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Clean error: {e}")
-        raise HTTPException(status_code=500, detail="Erreur lors du nettoyage")
-
-
-@app.post("/api/v1/download-cleaned")
-async def download_cleaned_endpoint(request: Request, file: UploadFile = File(...), paypal_order_id: str = "", user: dict = Depends(require_auth)):
-    if not file.filename or not file.filename.endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Seuls les fichiers CSV sont acceptes")
-    if not paypal_order_id:
-        raise HTTPException(status_code=400, detail="PayPal order ID requis pour le telechargement")
-    try:
-        verified = await _verify_paypal_capture(paypal_order_id)
-        if not verified:
-            raise HTTPException(status_code=402, detail="Paiement PayPal non verifie ou echoue")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"PayPal verification error: {e}")
-        raise HTTPException(status_code=502, detail="Erreur de verification PayPal")
-    try:
-        content = await file.read()
-        text_data = content.decode("utf-8-sig")
-        reader = csv.DictReader(io.StringIO(text_data))
-        raw_rows = list(reader)
-        if len(raw_rows) > MAX_CSV_ROWS:
-            raise HTTPException(status_code=400, detail=f"CSV contient {len(raw_rows)} lignes, maximum {MAX_CSV_ROWS}")
-        if len(raw_rows) == 0:
-            raise HTTPException(status_code=400, detail="Fichier CSV vide")
-        from prediction_cleaner import clean_csv
-        cleaned_records = clean_csv(text_data)
-        if not cleaned_records:
-            raise HTTPException(status_code=400, detail="Aucune donnee apres nettoyage")
-        out = io.StringIO()
-        writer = csv.DictWriter(out, fieldnames=list(cleaned_records[0].keys()))
-        writer.writeheader()
-        for rec in cleaned_records:
-            writer.writerow(rec)
-        return Response(
-            content=out.getvalue().encode("utf-8"),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=cleaned.csv"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Download cleaned error: {e}")
-        raise HTTPException(status_code=500, detail="Erreur lors du telechargement")
-
-
-@app.get("/api/v1/raw-columns-guide")
+@router.get("/api/v1/raw-columns-guide")
 async def raw_columns_guide():
-    from prediction_cleaner import TRAIN_COLUMNS as RAW_COLS
-    from prediction import COLUMNS_GUIDE_MAP
     columns = []
-    for col_name in RAW_COLS:
+    for col_name in TRAIN_COLUMNS:
         guide = COLUMNS_GUIDE_MAP.get(col_name, {})
         columns.append({
             "name": col_name,
@@ -796,7 +597,9 @@ async def raw_columns_guide():
     return {"columns": columns, "total": len(columns)}
 
 
-# --- PayPal ---
+# =============================================================================
+# ROUTES PAYPAL
+# =============================================================================
 
 async def _get_paypal_access_token() -> str:
     now = time.time()
@@ -820,7 +623,7 @@ async def _get_paypal_access_token() -> str:
     return _paypal_token_cache["token"]
 
 
-@app.post("/api/v1/paypal/create")
+@router.post("/api/v1/paypal/create")
 async def paypal_create_order(request: Request):
     body = await request.json()
     amount = body.get("amount", CLEANING_PRICE)
@@ -828,7 +631,7 @@ async def paypal_create_order(request: Request):
     try:
         base_url = str(request.base_url).rstrip("/")
         return_url = f"{base_url}/paypal/return"
-        cancel_url = f"{base_url}/static/cleaning.html"
+        cancel_url = f"{base_url}/html/cleaning.html"
         access_token = await _get_paypal_access_token()
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -870,7 +673,7 @@ async def paypal_create_order(request: Request):
         raise HTTPException(status_code=500, detail="Erreur lors de la creation de la commande PayPal")
 
 
-@app.post("/api/v1/paypal/capture")
+@router.post("/api/v1/paypal/capture")
 async def paypal_capture_order(request: Request):
     body = await request.json()
     order_id = body.get("order_id", "")
@@ -898,7 +701,6 @@ async def paypal_capture_order(request: Request):
             age_seconds = (now - create_time).total_seconds()
             if age_seconds > 600:
                 _paypal_orders.discard(order_id)
-                logger.warning(f"PayPal capture: order_id {order_id} expire (age: {age_seconds:.0f}s)")
                 raise HTTPException(status_code=403, detail="Commande expiree (plus de 10 minutes)")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -922,7 +724,7 @@ async def paypal_capture_order(request: Request):
         raise HTTPException(status_code=500, detail="Erreur lors de la capture PayPal")
 
 
-@app.get("/paypal/return")
+@router.get("/paypal/return")
 async def paypal_return(token: str = ""):
     if not token:
         return HTMLResponse(content="""<!DOCTYPE html><html><head><meta charset="utf-8"><title>PayPal</title></head>
@@ -984,75 +786,3 @@ async def paypal_return(token: str = ""):
 </body>
 </html>"""
     return HTMLResponse(content=html)
-
-
-async def _verify_paypal_capture(order_id: str) -> bool:
-    try:
-        access_token = await _get_paypal_access_token()
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{PAYPAL_BASE_URL}/v2/checkout/orders/{order_id}",
-                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                timeout=10.0,
-            )
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-        return data.get("status") == "COMPLETED"
-    except Exception as e:
-        logger.error(f"PayPal verify error: {e}")
-        return False
-
-
-@app.post("/api/v1/paypal/setup")
-async def paypal_setup(request: Request):
-    body = await request.json()
-    client_id = body.get("client_id", "")
-    client_secret = body.get("client_secret", "")
-    if not client_id or not client_secret:
-        raise HTTPException(status_code=400, detail="client_id et client_secret requis")
-    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{PAYPAL_BASE_URL}/v1/oauth2/token",
-            headers={"Authorization": f"Basic {credentials}", "Content-Type": "application/x-www-form-urlencoded"},
-            data="grant_type=client_credentials",
-            timeout=15.0,
-        )
-        if resp.status_code != 200:
-            return {"ok": False, "error": "Identifiants PayPal invalides"}
-        token_data = resp.json()
-    access_token = token_data["access_token"]
-    async with httpx.AsyncClient() as client:
-        prod_resp = await client.post(
-            f"{PAYPAL_BASE_URL}/v1/catalogs/products",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json={"name": "ML Predictor Pro - Nettoyage CSV", "description": "Service de nettoyage et prediction de fichier CSV immobilier", "type": "SERVICE"},
-            timeout=15.0,
-        )
-        if prod_resp.status_code not in (200, 201):
-            return {"ok": False, "error": "Echec de creation du produit PayPal"}
-        product = prod_resp.json()
-        product_id = product.get("id", "")
-    async with httpx.AsyncClient() as client:
-        price_resp = await client.post(
-            f"{PAYPAL_BASE_URL}/v1/pricing/PLANS",
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json={"product_id": product_id, "name": "Nettoyage CSV unique", "billing_cycle": {"tenure_type": "REGULAR", "pricing_scheme": {"fixed_price": {"currency_code": "EUR", "value": CLEANING_PRICE}}, "frequency": {"interval_unit": "MONTH", "interval_count": 1}}, "payment_preferences": {"auto_bill_outstanding": True}},
-            timeout=15.0,
-        )
-        if price_resp.status_code not in (200, 201):
-            return {"ok": False, "error": "Echec de creation du prix PayPal", "product_id": product_id}
-        price_data = price_resp.json()
-    return {
-        "ok": True,
-        "client_id": client_id,
-        "product_id": product_id,
-        "plan_id": price_data.get("id", ""),
-        "price": CLEANING_PRICE,
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, workers=4)

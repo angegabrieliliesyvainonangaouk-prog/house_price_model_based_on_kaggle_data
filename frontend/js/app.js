@@ -607,7 +607,7 @@ function redirectToCleaning() {
     sessionStorage.setItem('pendingCleaningCSV', csvData);
     sessionStorage.setItem('pendingCleaningName', csvFileObj.name);
   }
-  window.location.href = '/static/cleaning.html';
+  window.location.href = '/html/cleaning.html';
 }
 
 
