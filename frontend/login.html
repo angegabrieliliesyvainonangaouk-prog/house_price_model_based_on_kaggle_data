@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ML Predictor Pro - Connexion</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body>
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <div class="logo-icon">MP</div>
+      <h1>ML Predictor Pro</h1>
+      <p>Estimation Immobiliere par Intelligence Artificielle</p>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-auth="login">Connexion</button>
+      <button class="auth-tab" data-auth="register">Inscription</button>
+    </div>
+
+    <div id="authMessage" class="auth-message"></div>
+
+    <form id="loginForm" class="auth-form active">
+      <div class="form-group">
+        <label class="form-label">Adresse e-mail</label>
+        <input type="email" id="loginEmail" class="form-input" placeholder="votre@email.com" required autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mot de passe</label>
+        <input type="password" id="loginPassword" class="form-input" placeholder="Mot de passe" required autocomplete="current-password">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary" id="loginBtn">Se connecter</button>
+      </div>
+    </form>
+
+    <form id="registerForm" class="auth-form">
+      <div class="form-group">
+        <label class="form-label">Adresse e-mail Gmail</label>
+        <input type="email" id="registerEmail" class="form-input" placeholder="votre@gmail.com" required autocomplete="email">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Mot de passe</label>
+        <input type="password" id="registerPassword" class="form-input" placeholder="Minimum 8 caracteres" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Confirmer le mot de passe</label>
+        <input type="password" id="registerPasswordConfirm" class="form-input" placeholder="Confirmez" required minlength="8" autocomplete="new-password">
+      </div>
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary" id="registerBtn">Creer un compte</button>
+      </div>
+    </form>
+
+    <div class="legal-links">
+      <a class="legal-link" data-legal="mentions">Mentions legales</a>
+      <a class="legal-link" data-legal="cgu">Conditions d'utilisation</a>
+      <a class="legal-link" data-legal="privacy">Politique de confidentialite</a>
+      <a class="legal-link" data-legal="rgpd">RGPD</a>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="legalModal">
+  <div class="modal-content">
+    <button class="modal-close" id="modalCloseBtn">&times;</button>
+    <div id="legalContent"></div>
+  </div>
+</div>
+
+<script src="/static/js/fingerprint.js"></script>
+<script src="/static/js/login.js"></script>
+</body>
+</html>

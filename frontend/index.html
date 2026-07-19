@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<!-- FICHIER : index.html
+     DESCRIPTION : Structure HTML de l'application ML Predictor Pro -->
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ML Predictor Pro - Estimation Immobiliere</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div class="app" id="app">
+
+  <header>
+    <div class="logo">
+      <div class="logo-icon">MP</div>
+      <span id="appTitle">Estimation Immobiliere</span>
+    </div>
+    <div class="header-right">
+      <button class="lang-toggle" id="langToggle" title="Switch language">
+        <span id="langLabel">EN</span>
+      </button>
+      <button class="btn btn-secondary" id="logoutBtn">Deconnexion</button>
+      <div class="header-info">
+        <div id="versionInfo"></div>
+        <div class="token-badge" id="tokenBadge">Initialisation...</div>
+      </div>
+    </div>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="normal" role="tab" aria-selected="true" data-i18n="tab_express">Express</button>
+    <button class="tab" data-tab="professional" role="tab" aria-selected="false" data-i18n="tab_professional">Professionnel</button>
+  </div>
+
+  <div class="panel active" id="panel-normal">
+    <div class="card">
+      <div class="card-title" data-i18n="normal_title">Estimation rapide</div>
+      <div class="card-subtitle" data-i18n="normal_subtitle">Renseignez les 10 criteres les plus importants. Des valeurs par defaut seront utilisees pour les autres.</div>
+
+      <div class="model-selector" id="normalModelSelector">
+        <button class="model-option selected" data-model="xgboost">
+          <div class="model-option-name">XGBoost</div>
+          <div class="model-option-desc" data-i18n="model_xgb_desc">Modele boosting 6 696 arbres - Haute precision</div>
+        </button>
+        <button class="model-option" data-model="catboost">
+          <div class="model-option-name">CatBoost</div>
+          <div class="model-option-desc" data-i18n="model_cat_desc">Modele boosting 6 623 arbres - Robuste</div>
+        </button>
+      </div>
+
+      <div class="form-grid" id="normalForm"></div>
+
+      <div class="btn-group">
+        <button class="btn btn-primary" id="predictNormalBtn" data-i18n="btn_estimate">Estimer le prix</button>
+        <button class="btn btn-secondary" id="resetNormalBtn" data-i18n="btn_reset">Reinitialiser</button>
+      </div>
+
+      <div class="remaining-badge" id="normalRemaining"></div>
+
+      <div class="result-card" id="normalResult">
+        <div class="result-label" data-i18n="result_label">Valeur estimee du bien</div>
+        <div class="result-price" id="normalPrice"></div>
+        <div class="result-meta" id="normalMeta"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="panel-professional">
+    <div class="card">
+      <div class="card-title" data-i18n="prof_title">Mode professionnel</div>
+      <div class="card-subtitle" data-i18n="prof_subtitle">Importez un fichier CSV pour lancer les predictions completes.</div>
+
+      <div class="model-selector" id="profModelSelector">
+        <button class="model-option selected" data-model="xgboost">
+          <div class="model-option-name">XGBoost</div>
+          <div class="model-option-desc" data-i18n="model_xgb_desc">Modele boosting 6 696 arbres - Haute precision</div>
+        </button>
+        <button class="model-option" data-model="catboost">
+          <div class="model-option-name">CatBoost</div>
+          <div class="model-option-desc" data-i18n="model_cat_desc">Modele boosting 6 623 arbres - Robuste</div>
+        </button>
+      </div>
+
+      <div class="template-bar">
+        <span class="template-bar-text" data-i18n="template_text">Besoin d'un modele de fichier ?</span>
+        <a class="btn btn-outline" href="/api/v1/template" download data-i18n="template_btn">Telecharger le template CSV (161 colonnes)</a>
+      </div>
+
+      <div class="prof-panel active" id="profcsv">
+        <div class="upload-zone" id="uploadZone">
+          <div class="upload-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="upload-text" data-i18n="upload_text">Deposez votre fichier CSV ici ou cliquez pour parcourir</div>
+          <div class="upload-hint" id="uploadHint" data-i18n="upload_hint_clean">Deposez un fichier CSV nettoye (161 colonnes) pour lancer les predictions.</div>
+          <input type="file" class="upload-input" id="csvInput" accept=".csv">
+        </div>
+        <div class="upload-preview" id="uploadPreview"></div>
+
+        <div class="btn-group csv-actions" id="csvActions">
+          <button class="btn btn-primary" id="predictCsvBtn">
+            <span data-i18n="btn_predict_csv_free">Lancer les predictions</span>
+          </button>
+          <button class="btn btn-accent" id="cleanCsvBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v6m0 8v6M4.93 4.93l4.24 4.24m5.66 5.66l4.24 4.24M2 12h6m8 0h6M4.93 19.07l4.24-4.24m5.66-5.66l4.24-4.24"/></svg>
+            <span data-i18n="btn_clean_data">Nettoyer les donnees</span>
+          </button>
+        </div>
+
+        <div class="result-card" id="csvResult"></div>
+        <div class="remaining-badge" id="csvRemaining"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer class="footer">
+    <a class="footer-link" href="/static/mentions-legales.html">Mentions legales</a>
+    <span class="footer-copy">thecreator</span>
+  </footer>
+
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

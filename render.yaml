@@ -1,0 +1,63 @@
+services:
+  - type: web
+    name: ml-predictor-pro
+    runtime: image
+    image:
+      url: .
+    envVars:
+      - key: APP_NAME
+        value: "ML Predictor Pro"
+      - key: APP_VERSION
+        value: "1.0.0"
+      - key: MAX_CSV_ROWS
+        value: "1461"
+      - key: RATE_LIMIT_PER_IP
+        value: "60"
+      - key: RATE_LIMIT_WINDOW
+        value: "3600"
+      - key: DAILY_TOKEN_LIMIT
+        value: "20"
+      - key: TOKEN_WINDOW
+        value: "86400"
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: "https://api-m.sandbox.paypal.com"
+      - key: CLEANING_PRICE
+        value: "1.00"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ml-predictor-db
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: "HS256"
+      - key: JWT_ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: JWT_REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      - key: SMTP_HOST
+        value: "smtp.gmail.com"
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM_NAME
+        value: "ML Predictor Pro"
+      - key: SMTP_FROM_EMAIL
+        sync: false
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: CSRF_COOKIE_SECURE
+        value: "true"
+
+databases:
+  - name: ml-predictor-db
+    plan: free
+    databaseName: ml_predictor
+    user: ml_predictor_user

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nettoyage de donnees - ML Predictor Pro</title>
+<link rel="stylesheet" href="/static/css/common.css">
+<link rel="stylesheet" href="/static/css/cleaning.css">
+</head>
+<body>
+<div class="cleaning-page">
+
+  <div class="cleaning-header">
+    <a class="back-btn" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      Retour
+    </a>
+    <div class="cleaning-title">Nettoyage de donnees CSV</div>
+  </div>
+
+  <div class="cleaning-section" id="columnsGuideSection">
+    <div class="cleaning-section-title">
+      Format requis du fichier CSV brut
+      <span class="badge" id="columnsCount">80 colonnes</span>
+    </div>
+    <p class="cleaning-intro">
+      Votre fichier CSV doit contenir exactement ces 80 colonnes dans cet ordre. Le nettoyage transformera automatiquement ces donnees au format de 161 colonnes requis par le modele.
+    </p>
+    <div class="columns-table-wrapper">
+      <table class="columns-table" id="columnsTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Colonne</th>
+            <th>Type</th>
+            <th>Valeurs</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody id="columnsTableBody">
+          <tr><td colspan="5" class="col-loading">Chargement du guide...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="template-download">
+      <a class="btn btn-outline" href="/api/v1/template" download>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Telecharger le template CSV (161 colonnes)
+      </a>
+    </div>
+  </div>
+
+  <div class="cleaning-section">
+    <div class="cleaning-section-title">Etapes de nettoyage</div>
+
+    <div class="cleaning-flow">
+
+      <div class="flow-step active" id="step1">
+        <div class="step-number">1</div>
+        <div class="step-title">Deposez votre fichier CSV brut</div>
+        <div class="step-desc">Le fichier doit contenir les 80 colonnes du format Kaggle (Id + 79 caracteristiques).</div>
+        <div class="upload-zone" id="cleanUploadZone">
+          <div class="upload-icon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="upload-text">Deposez votre fichier CSV ici ou cliquez pour parcourir</div>
+          <div class="upload-hint">CSV brut avec 80 colonnes (format Kaggle Ames Housing)</div>
+          <input type="file" class="upload-input" id="cleanCsvInput" accept=".csv">
+        </div>
+        <div class="upload-preview" id="cleanPreview"></div>
+      </div>
+
+      <div class="flow-step" id="step2">
+        <div class="step-number">2</div>
+        <div class="step-title">Nettoyage des donnees</div>
+        <div class="step-desc">Le nettoyage transforme votre CSV de 80 colonnes en 161 colonnes pour le modele ML. Ce service est <strong>gratuit</strong>.</div>
+        <div class="cleaning-progress" id="cleaningProgress">
+          <div class="spinner"></div>
+          <span>Nettoyage en cours...</span>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="startCleanBtn" disabled>Lancer le nettoyage</button>
+        </div>
+      </div>
+
+      <div class="flow-step" id="step3">
+        <div class="step-number">3</div>
+        <div class="step-title">Telecharger le fichier nettoye</div>
+        <div class="step-desc">Le nettoyage est termine. Vous pouvez telecharger le fichier CSV nettoye (161 colonnes) en payant un petit montant. Vous pouvez aussi lancer les predictions directement (gratuit).</div>
+
+        <div id="cleaningResult" class="result-card"></div>
+
+        <div class="download-section" id="downloadSection">
+          <div id="directDownloadWrap" class="direct-download-wrap">
+            <a id="directDownloadLink" class="btn btn-success" href="#" download="cleaned.csv">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Telecharger le fichier nettoye (161 colonnes)
+            </a>
+            <div class="direct-download-hint">Cliquez pour telecharger votre fichier CSV nettoye.</div>
+          </div>
+          <div class="price-label">Ou payez pour soutenir le projet :</div>
+          <div class="price-selector" id="priceSelector">
+            <button class="price-option selected" data-price="1.00">1 EUR</button>
+            <button class="price-option" data-price="2.00">2 EUR</button>
+            <button class="price-option" data-price="5.00">5 EUR</button>
+            <div class="price-custom">
+              <input type="number" id="customPrice" min="1" max="100" step="0.50" placeholder="Autre">
+              <span>EUR</span>
+            </div>
+          </div>
+          <div class="result-actions">
+            <button class="btn btn-accent" id="downloadBtn" disabled>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Telecharger le CSV nettoye (via PayPal)
+            </button>
+            <button class="btn btn-secondary" id="predictCleanBtn" disabled>
+              Lancer les predictions (gratuit)
+            </button>
+          </div>
+          <div class="remaining-badge" id="cleanRemaining"></div>
+        </div>
+
+        <div class="paypal-section" id="paypalSection">
+          <div class="payment-card">
+            <div class="payment-icon">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+            </div>
+            <div class="payment-info">
+              <div class="payment-title">Paiement en cours</div>
+              <div class="payment-desc" id="paypalStatus">Redirection vers PayPal...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/cleaning.js"></script>
+</body>
+</html>
