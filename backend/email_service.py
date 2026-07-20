@@ -4,19 +4,19 @@ import httpx
 
 logger = logging.getLogger("email")
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "ML Predictor Pro")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "")
 
 
 async def send_verification_email(to_email: str, verification_token: str, base_url: str = "") -> bool:
-    if not RESEND_API_KEY:
-        logger.warning("RESEND_API_KEY not configured, skipping email send")
+    if not BREVO_API_KEY:
+        logger.warning("BREVO_API_KEY not configured, skipping email send")
         return False
 
     verify_url = f"{base_url}/api/v1/auth/verify-email?token={verification_token}" if base_url else f"/api/v1/auth/verify-email?token={verification_token}"
 
-    html = """
+    html = f"""
     <!DOCTYPE html>
     <html>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
@@ -43,7 +43,7 @@ async def send_verification_email(to_email: str, verification_token: str, base_u
         </div>
     </body>
     </html>
-    """.replace("{verify_url}", verify_url)
+    """
 
     text_content = f"""
 Confirmez votre e-mail
@@ -56,21 +56,21 @@ Ce lien est valable pendant 24 heures.
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "https://api.resend.com/emails",
+                "https://api.brevo.com/v3/smtp/email",
                 headers={
-                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "api-key": BREVO_API_KEY,
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>",
-                    "to": [to_email],
+                    "sender": {"name": SMTP_FROM_NAME, "email": SMTP_FROM_EMAIL},
+                    "to": [{"email": to_email}],
                     "subject": "ML Predictor Pro - Confirmez votre adresse e-mail",
-                    "text": text_content,
-                    "html": html,
+                    "textContent": text_content,
+                    "htmlContent": html,
                 },
                 timeout=10.0,
             )
-            if resp.status_code == 200:
+            if resp.status_code == 201:
                 logger.info(f"Verification email sent to {to_email}")
                 return True
             else:
@@ -82,7 +82,7 @@ Ce lien est valable pendant 24 heures.
 
 
 async def send_password_change_confirmation(to_email: str) -> bool:
-    if not RESEND_API_KEY:
+    if not BREVO_API_KEY:
         return False
 
     html = """
@@ -98,21 +98,21 @@ async def send_password_change_confirmation(to_email: str) -> bool:
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "https://api.resend.com/emails",
+                "https://api.brevo.com/v3/smtp/email",
                 headers={
-                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "api-key": BREVO_API_KEY,
                     "Content-Type": "application/json",
                 },
                 json={
-                    "from": f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>",
-                    "to": [to_email],
+                    "sender": {"name": SMTP_FROM_NAME, "email": SMTP_FROM_EMAIL},
+                    "to": [{"email": to_email}],
                     "subject": "ML Predictor Pro - Mot de passe modifie",
-                    "text": "Votre mot de passe a ete modifie avec succes.",
-                    "html": html,
+                    "textContent": "Votre mot de passe a ete modifie avec succes.",
+                    "htmlContent": html,
                 },
                 timeout=10.0,
             )
-            return resp.status_code == 200
+            return resp.status_code == 201
     except Exception as e:
         logger.error(f"Failed to send password change email: {e}")
         return False
