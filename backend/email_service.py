@@ -1,32 +1,22 @@
 import os
 import logging
-import aiosmtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import httpx
 
 logger = logging.getLogger("email")
 
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "ML Predictor Pro")
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "")
 
 
 async def send_verification_email(to_email: str, verification_token: str, base_url: str = "") -> bool:
-    if not SMTP_USER or not SMTP_PASSWORD:
-        logger.warning("SMTP not configured, skipping email send")
+    if not RESEND_API_KEY:
+        logger.warning("RESEND_API_KEY not configured, skipping email send")
         return False
 
     verify_url = f"{base_url}/api/v1/auth/verify-email?token={verification_token}" if base_url else f"/api/v1/auth/verify-email?token={verification_token}"
 
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
-    msg["To"] = to_email
-    msg["Subject"] = "ML Predictor Pro - Confirmez votre adresse e-mail"
-
-    html = f"""
+    html = """
     <!DOCTYPE html>
     <html>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
@@ -53,7 +43,7 @@ async def send_verification_email(to_email: str, verification_token: str, base_u
         </div>
     </body>
     </html>
-    """
+    """.replace("{verify_url}", verify_url)
 
     text_content = f"""
 Confirmez votre e-mail
@@ -63,35 +53,39 @@ Cliquez sur ce lien pour activer votre compte : {verify_url}
 Ce lien est valable pendant 24 heures.
 """
 
-    msg.attach(MIMEText(text_content, "plain"))
-    msg.attach(MIMEText(html, "html"))
-
     try:
-        await aiosmtplib.send(
-            msg,
-            hostname=SMTP_HOST,
-            port=SMTP_PORT,
-            start_tls=True,
-            username=SMTP_USER,
-            password=SMTP_PASSWORD,
-        )
-        logger.info(f"Verification email sent to {to_email}")
-        return True
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>",
+                    "to": [to_email],
+                    "subject": "ML Predictor Pro - Confirmez votre adresse e-mail",
+                    "text": text_content,
+                    "html": html,
+                },
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                logger.info(f"Verification email sent to {to_email}")
+                return True
+            else:
+                logger.error(f"Failed to send verification email to {to_email}: {resp.status_code} {resp.text}")
+                return False
     except Exception as e:
         logger.error(f"Failed to send verification email to {to_email}: {e}")
         return False
 
 
 async def send_password_change_confirmation(to_email: str) -> bool:
-    if not SMTP_USER or not SMTP_PASSWORD:
+    if not RESEND_API_KEY:
         return False
 
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
-    msg["To"] = to_email
-    msg["Subject"] = "ML Predictor Pro - Mot de passe modifie"
-
-    html = f"""
+    html = """
     <body style="font-family: -apple-system, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
         <div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 24px; text-align: center;">
             <h2 style="color: #166534;">Mot de passe modifie</h2>
@@ -101,12 +95,24 @@ async def send_password_change_confirmation(to_email: str) -> bool:
     </body>
     """
 
-    msg.attach(MIMEText("Votre mot de passe a ete modifie avec succes.", "plain"))
-    msg.attach(MIMEText(html, "html"))
-
     try:
-        await aiosmtplib.send(msg, hostname=SMTP_HOST, port=SMTP_PORT, start_tls=True, username=SMTP_USER, password=SMTP_PASSWORD)
-        return True
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "from": f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>",
+                    "to": [to_email],
+                    "subject": "ML Predictor Pro - Mot de passe modifie",
+                    "text": "Votre mot de passe a ete modifie avec succes.",
+                    "html": html,
+                },
+                timeout=10.0,
+            )
+            return resp.status_code == 200
     except Exception as e:
         logger.error(f"Failed to send password change email: {e}")
         return False
